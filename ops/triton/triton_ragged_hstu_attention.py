@@ -388,6 +388,7 @@ def _ragged_hstu_attn_fwd_one_block(  # noqa: C901
 )
 @triton.jit
 def _ragged_hstu_attn_fwd(  # noqa C901
+    idx,
     Q,
     K,
     V,
@@ -442,16 +443,17 @@ def _ragged_hstu_attn_fwd(  # noqa C901
 ):
     n_tile_num = tl.cdiv(MAX_SEQ_LEN, BLOCK_M)
     prog_id = tl.program_id(0)
-    num_progs = tl.num_programs(0)
+    # num_progs = tl.num_programs(0)
 
     total_tiles = n_tile_num * Z * H
 
-    tiles_per_sm = total_tiles // num_progs
-    if prog_id < total_tiles % num_progs:
-        tiles_per_sm += 1
+    # tiles_per_sm = total_tiles // num_progs
+    # if prog_id < total_tiles % num_progs:
+    #     tiles_per_sm += 1
 
     tile_idx = prog_id
-    for _ in range(0, tiles_per_sm):
+    # for _ in range(0, tiles_per_sm):
+    while tile_idx < total_tiles:
         pid = (total_tiles - tile_idx) // (Z * H)
         off_hz = (total_tiles - tile_idx) % (Z * H)
         off_z = off_hz // H
@@ -689,8 +691,8 @@ def _ragged_hstu_attn_fwd(  # noqa C901
                 )
                 out_ptrs = Out + off_o
                 tl.store(out_ptrs, acc, mask=(offs_m < seq_len)[:, None])
-        tile_idx += num_progs
-
+        tile_idx = tl.atomic_add(idx, 1)
+        # tile_idx += num_progs
 
 class _RaggedAttentionFunction(torch.autograd.Function):
     @staticmethod
@@ -720,8 +722,10 @@ class _RaggedAttentionFunction(torch.autograd.Function):
         has_multiple_targets = num_targets is not None
         has_attn_bias = attn_bias is not None
         has_attn_scale = attn_scale is not None
+        tile_num = 1216
+        tile_idx = torch.zeros((1, ), dtype=torch.int32, device='cuda') + tile_num
 
-        grid = (1216, )
+        grid = (tile_num, )
 
         stride_sz = 0
         stride_sm = 0
@@ -733,6 +737,7 @@ class _RaggedAttentionFunction(torch.autograd.Function):
                 stride_sm = attn_scale.stride(1)
 
         _ragged_hstu_attn_fwd[grid](
+            idx=tile_idx,
             Q=q,
             K=k,
             V=v,
@@ -830,7 +835,9 @@ class _RaggedAttentionRelativeBiasFunction(torch.autograd.Function):
         _, _, DimV = v.shape
         out = torch.empty_like(v)
         # print(f"grid: N = {N}, Z = {Z}, H = {H}, DimQ = {DimQ}, DimV = {DimV}")
-        grid = (1216, )
+        tile_num = 1216
+        tile_idx = torch.zeros((1,), dtype=torch.int32, device='cuda') + 1216
+        grid = (tile_num, )
 
         stride_sz = 0
         stride_sm = 0
@@ -844,6 +851,7 @@ class _RaggedAttentionRelativeBiasFunction(torch.autograd.Function):
         use_pos_bias = relative_bias_type == "POSITION" or relative_bias_type == "ALL"
 
         _ragged_hstu_attn_fwd[grid](
+            idx=tile_idx,
             Q=q,
             K=k,
             V=v,
