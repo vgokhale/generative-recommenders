@@ -443,7 +443,7 @@ def _ragged_hstu_attn_fwd(  # noqa C901
 ):
     n_tile_num = tl.cdiv(MAX_SEQ_LEN, BLOCK_M)
     prog_id = tl.program_id(0)
-    # num_progs = tl.num_programs(0)
+    num_progs = tl.num_programs(0)
 
     total_tiles = n_tile_num * Z * H
 
@@ -454,8 +454,8 @@ def _ragged_hstu_attn_fwd(  # noqa C901
     tile_idx = prog_id
     # for _ in range(0, tiles_per_sm):
     while tile_idx < total_tiles:
-        pid = (total_tiles - tile_idx) // (Z * H)
-        off_hz = (total_tiles - tile_idx) % (Z * H)
+        pid = (total_tiles - tile_idx - 1) // (Z * H)
+        off_hz = (total_tiles - tile_idx - 1) % (Z * H)
         off_z = off_hz // H
         off_h = off_hz % H
 
