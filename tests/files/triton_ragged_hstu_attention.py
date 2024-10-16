@@ -28,8 +28,8 @@ import triton.language as tl
 
 try:
     # @manual=//triton:triton
-    from triton.language.extra.cuda.libdevice import fast_dividef
-    # from triton.language.extra.libdevice import fast_dividef
+    # from triton.language.extra.cuda.libdevice import fast_dividef
+    from triton.language.extra.libdevice import fast_dividef
 except ImportError:
     # pyre-ignore: Undefined import [21]
     # @manual=//triton:triton
@@ -39,29 +39,30 @@ except ImportError:
 def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
     configs = []
     if torch.version.hip:
-        configs = [
-            triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_stages=1, num_warps=4),
-            # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_stages=1, num_warps=4),
-            # triton.Config({'BLOCK_M': 64, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_stages=1, num_warps=4),
-        ]
-        # for BLOCK_M in [32, 64]:
-        #     for BLOCK_N in [32, 64]:
-        #         for num_stages in [0, 1]:
-        #             for num_warps in [4, 8]:
-        #                 for matrix_instr_nonkdim in [16, 32]:
-        #                     for waves_per_eu in [0, 2]:
-        #                         configs.append(
-        #                             triton.Config(
-        #                                 {
-        #                                     "BLOCK_M": BLOCK_M,
-        #                                     "BLOCK_N": BLOCK_N,
-        #                                     "matrix_instr_nonkdim": matrix_instr_nonkdim,
-        #                                     "waves_per_eu": waves_per_eu,
-        #                                 },
-        #                                 num_stages=num_stages,
-        #                                 num_warps=num_warps,
-        #                             )
-        #                         )
+        # configs = [
+        #     # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_stages=2, num_warps=4),
+        #     # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_stages=2, num_warps=4),
+        #     # triton.Config({'BLOCK_M': 64, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_stages=2, num_warps=4),
+        #     triton.Config({'BLOCK_M': 128, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_stages=2, num_warps=4),
+        # ]
+        for BLOCK_M in [64, 128]:
+            for BLOCK_N in [32, 64]:
+                for num_stages in [0, 1]:
+                    for num_warps in [4, 8]:
+                        for matrix_instr_nonkdim in [16, 32]:
+                            for waves_per_eu in [0, 2]:
+                                configs.append(
+                                    triton.Config(
+                                        {
+                                            "BLOCK_M": BLOCK_M,
+                                            "BLOCK_N": BLOCK_N,
+                                            "matrix_instr_nonkdim": matrix_instr_nonkdim,
+                                            "waves_per_eu": waves_per_eu,
+                                        },
+                                        num_stages=num_stages,
+                                        num_warps=num_warps,
+                                    )
+                                )
     else:
         configs = [
             triton.Config(
@@ -337,7 +338,7 @@ def _ragged_hstu_attn_fwd_one_block(  # noqa: C901
             other=0.0,
         )
         qk = qk + attn_bias
-    silu = fast_dividef(qk, 1.0 + tl.exp(-qk)) * (1.0 / MAX_SEQ_LEN)
+    silu = fast_dividef(qk, 1.0 + tl.exp2(-1.44269504 * qk)) * (1.0 / MAX_SEQ_LEN)
     silu = tl.where(invalid_mask, silu, 0)
     if HAS_ATTN_SCALE:
         silu = silu * attn_scale[:, None]
@@ -509,7 +510,7 @@ def _ragged_hstu_attn_fwd_compute(  # noqa C901
             # pyre-ignore[61]
             V_block_ptr = tl.advance(V_block_ptr, (low, 0))
         # pyre-ignore[61]
-        for start_n in range(low, high, BLOCK_N):
+        for start_n in tl.range(low, high, BLOCK_N):
             cur_offs_n = offs_n + start_n
             mask_n = cur_offs_n < seq_len
             acc += _ragged_hstu_attn_fwd_one_block(
@@ -924,10 +925,10 @@ def _ragged_hstu_attn_fwd_persistent(  # noqa C901
             BLOCK_M=BLOCK_M,
             BLOCK_N=BLOCK_N,
         )
-        tile_idx = tl.atomic_add(idx, 1, sem='relaxed')
+        # tile_idx = tl.atomic_add(idx, 1, sem='relaxed')
         # tile_idx = tl.atomic_add(idx, 1)
 
-        # tile_idx += num_progs
+        tile_idx += num_progs
 
 def triton_ragged_attention(
     N: int,
@@ -1134,7 +1135,7 @@ def triton_ragged_attention_relative_bias(
         grid = (1216,)
         idx = torch.zeros((1,), dtype=torch.int32, device="cuda") + 1216
         _ragged_hstu_attn_fwd_persistent[grid](idx=idx, **kwargs)
-        print(f"bias_best_config = {_ragged_hstu_attn_fwd_persistent.best_config}")
+        # print(f"bias_best_config = {_ragged_hstu_attn_fwd_persistent.best_config}")
     else:
         grid = lambda meta: (  # noqa E731
                 triton.cdiv(N, meta["BLOCK_M"]),
