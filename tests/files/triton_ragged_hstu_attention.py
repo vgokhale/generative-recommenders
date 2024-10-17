@@ -45,7 +45,7 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
         #     # triton.Config({'BLOCK_M': 64, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_stages=2, num_warps=4),
         #     triton.Config({'BLOCK_M': 128, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_stages=2, num_warps=4),
         # ]
-        for BLOCK_M in [64, 128]:
+        for BLOCK_M in [32, 64, 128]:
             for BLOCK_N in [32, 64]:
                 for num_stages in [0, 1]:
                     for num_warps in [4, 8]:
@@ -343,7 +343,7 @@ def _ragged_hstu_attn_fwd_one_block(  # noqa: C901
     if HAS_ATTN_SCALE:
         silu = silu * attn_scale[:, None]
     v = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
-    silu = silu.to(v.dtype)
+    silu = silu.to(v.dtype, 'rtz')
     return tl.dot(silu, v, allow_tf32=ALLOW_TF32)
 
 
