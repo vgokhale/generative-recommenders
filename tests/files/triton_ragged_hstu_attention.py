@@ -1024,7 +1024,7 @@ def triton_ragged_attention(
         grid = (1216,)
         idx = torch.zeros((1,), dtype=torch.int32, device="cuda") + 1216
         _ragged_hstu_attn_fwd_persistent[grid](idx=idx, **kwargs)
-        print(f"best_config = {_ragged_hstu_attn_fwd_persistent.best_config}")
+        # print(f"best_config = {_ragged_hstu_attn_fwd_persistent.best_config}")
     else:
         grid = lambda meta: (  # noqa E731
                 triton.cdiv(N, meta["BLOCK_M"]),
