@@ -12,8 +12,10 @@ import pytest
 # )
 
 from triton_ragged_hstu_attention import (
-    _RaggedAttentionFunction,
-    _RaggedAttentionRelativeBiasFunction,
+    # _RaggedAttentionFunction,
+    triton_ragged_attention,
+    # _RaggedAttentionRelativeBiasFunction,
+    triton_ragged_attention_relative_bias,    
 )
 
 from triton_ragged_hstu_attention_ref import _RaggedAttentionFunction as _RaggedAttentionFunction_ref
@@ -169,8 +171,9 @@ def main(
     relative_bias_type = "ALL"
 
     if not no_relative_bias:
-        fn = lambda: _RaggedAttentionRelativeBiasFunction.apply(
-            max_seq_len,
+        # fn = lambda: _RaggedAttentionRelativeBiasFunction.apply(
+        fn = lambda: triton_ragged_attention_relative_bias(
+            # max_seq_len,
             alpha,
             q,
             k,
@@ -190,9 +193,11 @@ def main(
             num_targets,
             None,
             relative_bias_type,
+            None,
         )
     else:
-        fn = lambda: _RaggedAttentionFunction.apply(
+        # fn = lambda: _RaggedAttentionFunction.apply(
+        fn = lambda: triton_ragged_attention(
             max_seq_len,
             alpha,
             q,
@@ -201,6 +206,7 @@ def main(
             seq_offsets,
             invalid_attn_mask_type,
             num_targets,
+            None,
             None,
             None,
             None,
@@ -278,8 +284,9 @@ def test_correctness(
             relative_bias_type,
         )
 
-        out = _RaggedAttentionRelativeBiasFunction.apply(
-            max_seq_len,
+        # out = _RaggedAttentionRelativeBiasFunction.apply(
+        out = triton_ragged_attention_relative_bias(
+            # max_seq_len,
             alpha,
             q,
             k,
@@ -299,6 +306,7 @@ def test_correctness(
             num_targets,
             None,
             relative_bias_type,
+            None,
         )
 
     else:
@@ -316,7 +324,8 @@ def test_correctness(
             None,
         )
 
-        out = _RaggedAttentionFunction.apply(
+        # out = _RaggedAttentionFunction.apply(
+        out = triton_ragged_attention(
             max_seq_len,
             alpha,
             q,
@@ -325,6 +334,7 @@ def test_correctness(
             seq_offsets,
             invalid_attn_mask_type,
             num_targets,
+            None,
             None,
             None,
             None,
