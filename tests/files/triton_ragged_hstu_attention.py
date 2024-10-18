@@ -254,10 +254,15 @@ def _ragged_hstu_attn_fwd_one_block(  # noqa: C901
     ALLOW_TF32: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    BOUNDARY_CHECK: tl.constexpr,
 ):
     start_n = tl.multiple_of(start_n, BLOCK_N)
     # -- compute qk ----
-    k = tl.load(K_block_ptr, boundary_check=(1,), padding_option="zero")
+    if BOUNDARY_CHECK:
+        k = tl.load(K_block_ptr, boundary_check=(1,), padding_option="zero")
+    else:
+        k = tl.load(K_block_ptr)
+
     qk = tl.dot(q, k, allow_tf32=ALLOW_TF32) * alpha
     invalid_mask = offs_m[:, None] == offs_n[None, :]
     if HAS_MULTIPLE_TARGETS:
@@ -342,7 +347,12 @@ def _ragged_hstu_attn_fwd_one_block(  # noqa: C901
     silu = tl.where(invalid_mask, silu, 0)
     if HAS_ATTN_SCALE:
         silu = silu * attn_scale[:, None]
-    v = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
+
+    if BOUNDARY_CHECK:
+        v = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
+    else:
+        v = tl.load(V_block_ptr)
+
     silu = silu.to(v.dtype, 'rtz')
     return tl.dot(silu, v, allow_tf32=ALLOW_TF32)
 
@@ -510,7 +520,9 @@ def _ragged_hstu_attn_fwd_compute(  # noqa C901
             # pyre-ignore[61]
             V_block_ptr = tl.advance(V_block_ptr, (low, 0))
         # pyre-ignore[61]
-        for start_n in tl.range(low, high, BLOCK_N):
+        ends = high // BLOCK_N
+        # ends = high
+        for start_n in tl.range(low, ends, BLOCK_N):
             cur_offs_n = offs_n + start_n
             mask_n = cur_offs_n < seq_len
             acc += _ragged_hstu_attn_fwd_one_block(
@@ -560,6 +572,62 @@ def _ragged_hstu_attn_fwd_compute(  # noqa C901
                 ALLOW_TF32=ALLOW_TF32,
                 BLOCK_M=BLOCK_M,
                 BLOCK_N=BLOCK_N,
+                BOUNDARY_CHECK=False,
+            )
+            K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
+            V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
+
+        for start_n in tl.range(ends, high, BLOCK_N):
+            cur_offs_n = offs_n + start_n
+            mask_n = cur_offs_n < seq_len
+            acc += _ragged_hstu_attn_fwd_one_block(
+                start_n=start_n,
+                seq_len=seq_len,
+                offs_m=offs_m,
+                offs_n=cur_offs_n,
+                mask_m=mask_m,
+                mask_n=mask_n,
+                q=q,
+                K_block_ptr=K_block_ptr,
+                V_block_ptr=V_block_ptr,
+                n_targets=n_targets if HAS_MULTIPLE_TARGETS else None,
+                ts_1_ptrs=(
+                    # pyre-ignore[61]
+                    ts_1_ptrs
+                    if ATTN_BIAS_TYPE == "fused" and USE_TIME_BIAS
+                    else None
+                ),
+                # pyre-ignore[61]
+                ts_0=ts_0 if ATTN_BIAS_TYPE == "fused" and USE_TIME_BIAS else None,
+                TW=TW,
+                PW=PW,
+                alpha=alpha,
+                MAX_SEQ_LEN=MAX_SEQ_LEN,
+                num_buckets=num_buckets,
+                max_pos_ind=max_pos_ind,
+                max_attn_len=max_attn_len,
+                time_bucket_incr=time_bucket_incr,
+                time_bucket_div=time_bucket_div,
+                time_delta=time_delta,
+                # pyre-ignore[61]
+                bias_ptrs=bias_ptrs if ATTN_BIAS_TYPE == "separate" else None,
+                # pyre-ignore[61]
+                attn_scale=attn_scale if HAS_ATTN_SCALE else None,
+                INVALID_MASK_TYPE=INVALID_MASK_TYPE,
+                CAUSAL=CAUSAL,
+                BUCKET_FN=BUCKET_FN,
+                ATTN_BIAS_TYPE=ATTN_BIAS_TYPE,
+                USE_TIME_BIAS=USE_TIME_BIAS,
+                USE_POS_BIAS=USE_POS_BIAS,
+                HAS_MAX_POS_IND=HAS_MAX_POS_IND,
+                HAS_MULTIPLE_TARGETS=HAS_MULTIPLE_TARGETS,
+                HAS_ATTN_SCALE=HAS_ATTN_SCALE,
+                HAS_MAX_ATTN_LEN=HAS_MAX_ATTN_LEN,
+                IS_DELTA_Q=IS_DELTA_Q,
+                ALLOW_TF32=ALLOW_TF32,
+                BLOCK_M=BLOCK_M,
+                BLOCK_N=BLOCK_N,
+                BOUNDARY_CHECK=True,
             )
             K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
             V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
@@ -626,6 +694,7 @@ def _ragged_hstu_attn_fwd_compute(  # noqa C901
                         ALLOW_TF32=ALLOW_TF32,
                         BLOCK_M=BLOCK_M,
                         BLOCK_N=BLOCK_N,
+                        BOUNDARY_CHECK=True,
                     )
                     K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
                     V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
@@ -1024,7 +1093,7 @@ def triton_ragged_attention(
         grid = (1216,)
         idx = torch.zeros((1,), dtype=torch.int32, device="cuda") + 1216
         _ragged_hstu_attn_fwd_persistent[grid](idx=idx, **kwargs)
-        print(f"best_config = {_ragged_hstu_attn_fwd_persistent.best_config}")
+        # print(f"best_config = {_ragged_hstu_attn_fwd_persistent.best_config}")
     else:
         grid = lambda meta: (  # noqa E731
                 triton.cdiv(N, meta["BLOCK_M"]),
