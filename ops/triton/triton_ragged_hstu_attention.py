@@ -45,12 +45,12 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
         #     # triton.Config({'BLOCK_M': 64, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_stages=2, num_warps=4),
         #     triton.Config({'BLOCK_M': 128, 'BLOCK_N': 32, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_stages=2, num_warps=4),
         # ]
-        for BLOCK_M in [32, 64, 128]:
-            for BLOCK_N in [32, 64]:
-                for num_stages in [1, 2]:
-                    for num_warps in [4, 8]:
-                        for matrix_instr_nonkdim in [16, 32]:
-                            for waves_per_eu in [0, 2]:
+        for BLOCK_M in [128]:
+            for BLOCK_N in [32]:
+                for num_stages in [1]:
+                    for num_warps in [4]:
+                        for matrix_instr_nonkdim in [16]:
+                            for waves_per_eu in [2]:
                                 configs.append(
                                     triton.Config(
                                         {
@@ -254,6 +254,7 @@ def _ragged_hstu_attn_fwd_one_block(  # noqa: C901
     ALLOW_TF32: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    APPLY_MASK: tl.constexpr,
 ):
     start_n = tl.multiple_of(start_n, BLOCK_N)
     # -- compute qk ----
@@ -339,7 +340,8 @@ def _ragged_hstu_attn_fwd_one_block(  # noqa: C901
         )
         qk = qk + attn_bias
     silu = fast_dividef(qk, 1.0 + tl.exp2(-1.44269504 * qk)) * (1.0 / MAX_SEQ_LEN)
-    silu = tl.where(invalid_mask, silu, 0)
+    if APPLY_MASK:
+        silu = tl.where(invalid_mask, silu, 0)
     if HAS_ATTN_SCALE:
         silu = silu * attn_scale[:, None]
     v = tl.load(V_block_ptr, boundary_check=(0,), padding_option="zero")
@@ -510,7 +512,8 @@ def _ragged_hstu_attn_fwd_compute(  # noqa C901
             # pyre-ignore[61]
             V_block_ptr = tl.advance(V_block_ptr, (low, 0))
         # pyre-ignore[61]
-        for start_n in tl.range(low, high, BLOCK_N):
+        high_nm = high if (high - BLOCK_M // BLOCK_N) <= 0 else (high - BLOCK_M // BLOCK_N)
+        for start_n in tl.range(low, high_nm, BLOCK_N):
             cur_offs_n = offs_n + start_n
             mask_n = cur_offs_n < seq_len
             acc += _ragged_hstu_attn_fwd_one_block(
@@ -560,6 +563,61 @@ def _ragged_hstu_attn_fwd_compute(  # noqa C901
                 ALLOW_TF32=ALLOW_TF32,
                 BLOCK_M=BLOCK_M,
                 BLOCK_N=BLOCK_N,
+                APPLY_MASK=False
+            )
+            K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
+            V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
+        for start_n in tl.range(high_nm, high, BLOCK_N):
+            cur_offs_n = offs_n + start_n
+            mask_n = cur_offs_n < seq_len
+            acc += _ragged_hstu_attn_fwd_one_block(
+                start_n=start_n,
+                seq_len=seq_len,
+                offs_m=offs_m,
+                offs_n=cur_offs_n,
+                mask_m=mask_m,
+                mask_n=mask_n,
+                q=q,
+                K_block_ptr=K_block_ptr,
+                V_block_ptr=V_block_ptr,
+                n_targets=n_targets if HAS_MULTIPLE_TARGETS else None,
+                ts_1_ptrs=(
+                    # pyre-ignore[61]
+                    ts_1_ptrs
+                    if ATTN_BIAS_TYPE == "fused" and USE_TIME_BIAS
+                    else None
+                ),
+                # pyre-ignore[61]
+                ts_0=ts_0 if ATTN_BIAS_TYPE == "fused" and USE_TIME_BIAS else None,
+                TW=TW,
+                PW=PW,
+                alpha=alpha,
+                MAX_SEQ_LEN=MAX_SEQ_LEN,
+                NUM_BUCKETS=NUM_BUCKETS,
+                MAX_POS_IND=MAX_POS_IND,
+                max_attn_len=max_attn_len,
+                TIME_BUCKET_INCR=TIME_BUCKET_INCR,
+                TIME_BUCKET_DIV=TIME_BUCKET_DIV,
+                TIME_DELTA=TIME_DELTA,
+                # pyre-ignore[61]
+                bias_ptrs=bias_ptrs if ATTN_BIAS_TYPE == "separate" else None,
+                # pyre-ignore[61]
+                attn_scale=attn_scale if HAS_ATTN_SCALE else None,
+                INVALID_MASK_TYPE=INVALID_MASK_TYPE,
+                CAUSAL=CAUSAL,
+                BUCKET_FN=BUCKET_FN,
+                ATTN_BIAS_TYPE=ATTN_BIAS_TYPE,
+                USE_TIME_BIAS=USE_TIME_BIAS,
+                USE_POS_BIAS=USE_POS_BIAS,
+                HAS_MAX_POS_IND=HAS_MAX_POS_IND,
+                HAS_MULTIPLE_TARGETS=HAS_MULTIPLE_TARGETS,
+                HAS_ATTN_SCALE=HAS_ATTN_SCALE,
+                HAS_MAX_ATTN_LEN=HAS_MAX_ATTN_LEN,
+                IS_DELTA_Q=IS_DELTA_Q,
+                ALLOW_TF32=ALLOW_TF32,
+                BLOCK_M=BLOCK_M,
+                BLOCK_N=BLOCK_N,
+                APPLY_MASK=True
             )
             K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
             V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
@@ -626,6 +684,7 @@ def _ragged_hstu_attn_fwd_compute(  # noqa C901
                         ALLOW_TF32=ALLOW_TF32,
                         BLOCK_M=BLOCK_M,
                         BLOCK_N=BLOCK_N,
+                        APPLY_MASK=True
                     )
                     K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
                     V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
